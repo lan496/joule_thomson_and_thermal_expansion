@@ -5,13 +5,13 @@ import matplotlib.pyplot as plt
 from material_dict import *
 
 
-def get_material_id(name):
-    return material_dict[name]
+def liner_interpolation(x0, x1, y0, y1):
+    return x0 - y0 * (x1 - x0) / (y1 - y0)
 
 
 def get_data(name, pressure):
     # pressure unit is MPa
-    material_id = get_material_id(name)
+    material_id = material_dict[name]
     url_base = "http://webbook.nist.gov/cgi/fluid.cgi?Action=Data&Wide=on&Type=IsoBar&Digits=12&THigh=2000&TLow=0&TInc=1&RefState=DEF&TUnit=K&PUnit=MPa&DUnit=mol%2Fl&HUnit=kJ%2Fmol&WUnit=m%2Fs&VisUnit=uPa*s&STUnit=N%2Fm"
     url = url_base + '&ID=' + material_id + '&P=' + str(pressure)
 
@@ -32,71 +32,55 @@ def get_data(name, pressure):
             else:
                 return x
         items = map(convert, e.split('\t'))
+        tmp_dict = {keys[i]: items[i] for i in range(len(keys))}
 
-        data.append({keys[j]: items[j] for j in range(len(keys))})
+        data_i = {}
+        data_i[u'T'] = tmp_dict[u'Temperature (K)']
+        data_i[u'P'] = tmp_dict[u'Pressure (MPa)']
+        data_i[u'V'] = tmp_dict[u'Volume (l/mol)']
+        data_i[u'JT'] = tmp_dict[u'Joule-Thomson (K/MPa)']
+        data_i[u'Phase'] = tmp_dict[u'Phase']
 
-    for e in data:
-        e[u'log Volume'] = np.log(e[u'Volume (l/mol)'])
+        data_i[u'log_T'] = np.log(tmp_dict[u'Temperature (K)'])
 
-    data = calc_thermal_expansion(data)
+        data.append(data_i)
 
     return data
 
 
-def calc_thermal_expansion(data):
-    V = u'Volume (l/mol)'
-    T = u'Temperature (K)'
-    alpha = u'Thermal expansion (/K)'
-
-    for i, e in enumerate(data):
-        if i == len(data) - 1:
-            e[alpha] = data[i - 1][alpha]
-        else:
-            try:
-                tmp = (data[i + 1][V] - data[i][V]) / (data[i + 1][T] - data[i][T]) / data[i][V]
-                e[alpha] = tmp
-            except:
-                e[alpha] = float('inf')
-    return data
-
-
-def find_T_inverse(data):
-    T = u'Temperature (K)'
-    JT = u'Joule-Thomson (K/MPa)'
+def find_T1(data):
     res = []
-    for i, e in enumerate(data):
-        if i == len(data) - 1:
-            continue
-        if data[i][JT] * data[i + 1][JT] < 0.0:
-            res.append(data[i][T])
+    for i in np.arange(len(data) - 1):
+        if data[i]['JT'] * data[i + 1]['JT'] < 0.0:
+            log_T1 = liner_interpolation(data[i]['log_T'], data[i + 1]['log_T'], data[i]['JT'], data[i + 1]['JT'])
+            err = 0.0
+            res.append((np.exp(log_T1), err))
     return res
 
 
-def find_T_2(data):
-    T = u'Temperature (K)'
-    alpha = u'Thermal expansion (/K)'
+def find_T2(data):
+    x = []
+    y = []
+    for i in np.arange(len(data) - 1):
+        xi = (data[i]['log_T'] + data[i + 1]['log_T']) / 2.0
+        try:
+            yi = (np.log(data[i + 1]['V']) - np.log(data[i]['V'])) / (data[i + 1]['log_T'] - data[i]['log_T']) - 1.0
+        except:
+            yi = float('inf')
+        x.append(xi)
+        y.append(yi)
+
+    plt.plot(x, y)
+    plt.pause(0.01)
     res = []
-    for i, e in enumerate(data):
-        if i == len(data) - 1:
+    for i in np.arange(len(y) - 1):
+        if y[i] * y[i + 1] > 0.0:
             continue
-        if (data[i][alpha] * data[i][T] - 1.0) * (data[i + 1][alpha] * data[i][T] - 1.0) < 0.0:
-            res.append(data[i][T])
+        log_T2 = liner_interpolation(x[i], x[i + 1], y[i], y[i + 1])
+        err = 0.0
+        res.append((np.exp(log_T2), err))
+
     return res
-
-
-def get_T1T2(data):
-    T1 = find_T_inverse(data)
-    T2 = find_T_2(data)
-    print T1, T2
-    if len(T1) == 2 and len(T2) >= 2:
-        if np.abs(T1[0] - T2[0]) < 10:
-            return [[T1[0], T2[0]], [T1[1], T2[-1]]]
-    elif len(T1) == 1 and len(T2) >= 1:
-        if np.abs(T1[0] - T2[0]) < 10:
-            return [[T1[0], T2[0]]]
-        elif np.abs(T1[0] - T2[-1]) < 10:
-            return [[T1[0], T2[-1]]]
-    return [[]]
 
 
 def get_material_data(name):
@@ -117,58 +101,19 @@ def get_material_data(name):
     return T1, T2
 
 
-def plot_by_pressure(name):
-    plt.xlabel('pressure [MPa]')
-    plt.ylabel('temperature [K]')
-    plt.title(name)
-
-    T1_x = []
-    T1_y = []
-    T2_x = []
-    T2_y = []
-
-    for p in np.arange(0, 10, 1):
-        data = get_data(name, p)
-        T1 = find_T_inverse(data)
-        T2 = find_T_2(data)
-        print p, T1, T2
-        for e in T1:
-            T1_x.append(p)
-            T1_y.append(e)
-        for e in T2:
-            T2_x.append(p)
-            T2_y.append(e)
-
-    plt.scatter(T1_x, T1_y, c='red', marker='x', label='T1', s=30)
-    plt.scatter(T2_x, T2_y, c='blue', label='T2', s=10)
-    plt.legend()
-    plt.show()
-
-
-def parametric_plot():
-    T1_N, T2_N = material_dict['Nitrogen']
-    T1_W, T2_W = material_dict['Water']
-    T1_X, T2_X = material_dict['Xenon']
-    T1_T, T2_T = material_dict['Oxygen']
-
-    plt.scatter(T1_N, T2_N, c='red', label='Nitrogen')
-    plt.scatter(T1_W, T2_W, c='blue', label='Water')
-    plt.scatter(T1_X, T2_X, c='yellow', label='Xenon')
-    plt.scatter(T1_T, T2_T, c='green', label='Oxygen')
-
-    plt.xlim([0, 800])
-    plt.ylim([0, 800])
-    plt.xlabel('T1 [K]')
-    plt.ylabel('T2 [K]')
-    plt.legend()
-    plt.title('1 - 10 MPa')
-
-    x = np.arange(0, 800)
-    plt.plot(x, x, 'black')
-
-    plt.show()
-
-
 if __name__ == '__main__':
-    d = get_data('Water', 10)
-    get_T1T2(d)
+    plt.xlabel('log V')
+    plt.ylabel(r'$\frac{d}{dx}$ log V - 1')
+    plt.xlim(0, 8)
+    plt.ylim(-0.1, 0.1)
+    plt.title('T2')
+    x = np.arange(0, 10)
+    y = [0 for e in x]
+    plt.plot(x, y, color='black')
+
+    for p in np.arange(1, 10, 3):
+        data = get_data('Nitrogen', p)
+        print p
+        print find_T1(data)
+        print find_T2(data)
+    plt.show()
