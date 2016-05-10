@@ -1,6 +1,10 @@
 import numpy as np
+import scipy
 import requests
 import matplotlib.pyplot as plt
+
+from scipy import optimize
+from scipy import interpolate as intp
 
 from material_dict import *
 
@@ -19,6 +23,24 @@ def third_order_differential(x, y, k):
     d1 = second_order_differential(x, y, k + 1)
     d2 = second_order_differential(x, y, k)
     return (d1 - d2) / (x[k + 1] - x[k])
+
+
+def spline_coefficient(f, x0, x1):
+    s = np.linspace(x0, x1, num=4)
+
+    A = np.zeros((4, 4))
+    b = np.zeros(4)
+
+    for i in np.arange(4):
+        for j in np.arange(4):
+            A[i, j] = s[i] ** (3 - j)
+        b[i] = f(s[i])
+
+    Ainv = np.linalg.inv(A)
+
+    x = np.dot(Ainv, b)
+
+    return x[0], x[1], x[2], x[3]
 
 
 def get_data(name, pressure):
@@ -64,14 +86,15 @@ def find_log_T1(data):
     res = []
 
     for i in np.arange(len(data) - 1):
-        if data[i]['JT'] * data[i + 1]['JT'] < 0.0:
-            log_V_lst = [e['V'] for e in data]
-            JT_lst = [e['JT'] for e in data]
+        if data[i]['JT'] * data[i + 1]['JT'] > 0.0:
+            continue
+        log_T_lst = [e['log_T'] for e in data]
+        JT_lst = [e['JT'] for e in data]
 
-            log_T1 = liner_interpolation(data[i]['log_T'], data[i + 1]['log_T'], JT_lst[i], JT_lst[i + 1])
-            err_li = second_order_differential(log_V_lst, JT_lst, i) * (log_V_lst[i + 1] - log_V_lst[i]) * (log_V_lst[i + 1] - log_V_lst[i]) / 8.0
+        log_T1 = liner_interpolation(log_T_lst[i], log_T_lst[i + 1], JT_lst[i], JT_lst[i + 1])
+        err_ip = np.abs(second_order_differential(log_T_lst, JT_lst, i) / 8.0 * ((log_T_lst[i + 1] - log_T_lst[i]) ** 2))
 
-            res.append((log_T1, np.abs(err_li)))
+        res.append((log_T1, err_ip))
 
     return res
 
@@ -79,10 +102,14 @@ def find_log_T1(data):
 def find_log_T2(data):
     x = []
     y = []
+
+    log_T_lst = [e['log_T'] for e in data]
+    log_V_lst = [np.log(e['V']) for e in data]
+
     for i in np.arange(len(data) - 1):
-        xi = (data[i]['log_T'] + data[i + 1]['log_T']) / 2.0
+        xi = (log_T_lst[i] + log_T_lst[i + 1]) / 2.0
         try:
-            yi = (np.log(data[i + 1]['V']) - np.log(data[i]['V'])) / (data[i + 1]['log_T'] - data[i]['log_T']) - 1.0
+            yi = (log_V_lst[i + 1] - log_V_lst[i]) / (log_T_lst[i + 1] - log_T_lst[i]) - 1.0
         except:
             yi = float('inf')
         x.append(xi)
@@ -93,13 +120,64 @@ def find_log_T2(data):
         if y[i] * y[i + 1] > 0.0:
             continue
 
-        log_V_lst = [np.log(e['V']) for e in data]
-
         log_T2 = liner_interpolation(x[i], x[i + 1], y[i], y[i + 1])
-        err_diff = third_order_differential(x, log_V_lst, i) * (x[i + 1] - x[i]) * (x[i + 1] - x[i]) / 24.0
-        err_li = second_order_differential(x, y, i) * (x[i + 1] - x[i]) * (x[i + 1] - x[i]) / 8.0
+        err_diff = np.abs(third_order_differential(log_T_lst, log_V_lst, i) / 24.0 * ((log_T_lst[i + 1] - log_T_lst[i]) ** 2))
+        err_ip = np.abs(second_order_differential(x, y, i) / 8.0 * ((x[i + 1] - x[i]) ** 2))
 
-        res.append((log_T2, np.abs(err_diff) + np.abs(err_li)))
+        res.append((log_T2, err_diff + err_ip))
+
+    return res
+
+
+def find_log_T1_with_spline(data):
+    log_T_lst = [e['log_T'] for e in data]
+    JT_lst = [e['JT'] for e in data]
+    res = []
+
+    f = intp.interp1d(log_T_lst, JT_lst, kind='cubic')
+
+    for i in np.arange(len(log_T_lst) - 1):
+        if JT_lst[i] * JT_lst[i + 1] > 0.0:
+            continue
+        log_T1 = optimize.bisect(f, log_T_lst[i], log_T_lst[i + 1])
+
+        a, b, c, d = spline_coefficient(f, log_T_lst[i], log_T_lst[i + 1])
+        err_ip = np.abs(max(6.0 * a * log_T_lst[i] + 2.0 * b, 6.0 * a * log_T_lst[i + 1], 2.0 * b) / 8.0 * ((log_T_lst[i + 1] - log_T_lst[i]) ** 2))
+
+        res.append((log_T1, err_ip))
+
+    return res
+
+
+def find_log_T2_with_spline(data):
+    x = []
+    y = []
+
+    log_T_lst = [e['log_T'] for e in data]
+    log_V_lst = [np.log(e['V']) for e in data]
+
+    for i in np.arange(len(data) - 1):
+        xi = (log_T_lst[i] + log_T_lst[i + 1]) / 2.0
+        yi = (log_V_lst[i + 1] - log_V_lst[i]) / (log_T_lst[i + 1] - log_T_lst[i]) - 1.0
+
+        x.append(xi)
+        y.append(yi)
+
+    f = intp.interp1d(log_T_lst, log_V_lst, kind='cubic')
+    g = intp.interp1d(x, y, kind='cubic')
+
+    res = []
+
+    for i in np.arange(len(x) - 1):
+        if y[i] * y[i + 1] > 0.0:
+            continue
+        log_T2 = optimize.bisect(g, x[i], x[i + 1])
+        af, bf, cf, df, = spline_coefficient(f, log_T_lst[i], log_T_lst[i + 1])
+        ag, bg, cg, dg = spline_coefficient(g, x[i], x[i + 1])
+        err_diff = np.abs(6.0 * af / 24.0 * ((log_T_lst[i + 1] - log_T_lst[i]) ** 2))
+        err_ip = np.abs(max(6.0 * ag * x[i] + 2.0 * bg, 6.0 * ag * x[i + 1], 2.0 * bg)) / 8.0 * ((x[i + 1] - x[i]) ** 2)
+
+        res.append((log_T2, err_diff + err_ip))
 
     return res
 
@@ -111,36 +189,26 @@ def calc_epsilon(log_T1, log_T2):
     for i in np.arange(len(log_T1)):
         T1 = np.exp(log_T1[i][0])
         T2 = np.exp(log_T2[i][0])
-        print T1, T2
         epsilon = np.abs(T1 - T2) / T1
-        err = T2 / T1 * max(np.abs(1 - np.exp(log_T1[i][1] + log_T2[i][1])), np.abs(1 - np.exp(-(log_T1[i][1] + log_T2[i][1]))))
-        res.append((epsilon, err))
+        eps_err = T2 / T1 * max(np.abs(1 - np.exp(log_T1[i][1] + log_T2[i][1])), np.abs(1 - np.exp(-(log_T1[i][1] + log_T2[i][1]))))
+        res.append([T1, T2, epsilon, eps_err])
     return res
 
 
-def get_material_data(name):
-    d = []
-    for p in np.arange(0, 10, 1):
-        data = get_data(name, p)
-        tmp = get_T1T2(data)
-        for e in tmp:
-            d.append(e)
-
-    T1 = []
-    T2 = []
-    for e in d:
-        if len(e) < 2:
-            continue
-        T1.append(e[0])
-        T2.append(e[1])
-    return T1, T2
-
-
 if __name__ == '__main__':
-    for p in np.arange(1, 30, 1):
+    for p in np.arange(50, 60, 1):
         data = get_data('Water', p)
         print str(p) + ' MPa'
+        print "naive differential"
         log_T1 = find_log_T1(data)
         log_T2 = find_log_T2(data)
         ep = calc_epsilon(log_T1, log_T2)
-        print ep
+        for e in ep:
+            print e
+        print "third spline"
+        log_T1_sp = find_log_T1_with_spline(data)
+        log_T2_sp = find_log_T2_with_spline(data)
+        ep_sp = calc_epsilon(log_T1_sp, log_T2_sp)
+        for e in ep_sp:
+            print e
+        print
