@@ -82,6 +82,17 @@ def get_data(name, pressure):
     return data
 
 
+def divide_data_by_phase(data):
+    vaper = filter(lambda e: e['Phase'] == 'vaper', data)
+    liquid = filter(lambda e: e['Phase'] == 'liquid', data)
+    supercritical = filter(lambda e: e['Phase'] == 'supercritical', data)
+    res = []
+    for e in [vaper, liquid, supercritical]:
+        if len(e) > 0:
+            res.append(e)
+    return res
+
+
 def find_log_T1(data):
     res = []
 
@@ -196,19 +207,22 @@ def calc_epsilon(log_T1, log_T2):
 
 
 if __name__ == '__main__':
-    for p in np.arange(50, 60, 1):
-        data = get_data('Water', p)
+    print 'Nitrogen'
+    for p in np.arange(1, 20, 1):
+        data = get_data('Nitrogen', p)
+        pdata = divide_data_by_phase(data)
         print str(p) + ' MPa'
-        print "naive differential"
-        log_T1 = find_log_T1(data)
-        log_T2 = find_log_T2(data)
-        ep = calc_epsilon(log_T1, log_T2)
-        for e in ep:
-            print e
-        print "third spline"
-        log_T1_sp = find_log_T1_with_spline(data)
-        log_T2_sp = find_log_T2_with_spline(data)
-        ep_sp = calc_epsilon(log_T1_sp, log_T2_sp)
-        for e in ep_sp:
-            print e
+        for d in pdata:
+            print "naive differential"
+            log_T1 = find_log_T1(d)
+            log_T2 = find_log_T2(d)
+            ep = calc_epsilon(log_T1, log_T2)
+            for e in ep:
+                print e
+            print "third spline"
+            log_T1_sp = find_log_T1_with_spline(d)
+            log_T2_sp = find_log_T2_with_spline(d)
+            ep_sp = calc_epsilon(log_T1_sp, log_T2_sp)
+            for e in ep_sp:
+                print e
         print
